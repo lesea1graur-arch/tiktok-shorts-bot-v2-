@@ -1,9 +1,9 @@
 name: Generate Trading Shorts
 
 on:
-  workflow_dispatch:  # Запуск вручную по кнопке
+  workflow_dispatch:
   schedule:
-    - cron: '0 9 * * *'  # Каждый день в 9:00 UTC (12:00 МСК)
+    - cron: '0 9 * * *'
 
 jobs:
   generate:
