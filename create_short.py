@@ -1,5 +1,5 @@
 """
-create_short.py — генератор Shorts/Reels (улучшенная версия)
+create_short.py — генератор Shorts/Reels с ElevenLabs озвучкой
 Формат: 1080x1920, mp4, h264
 """
 
@@ -13,11 +13,11 @@ from pathlib import Path
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
+from elevenlabs import VoiceSettings
+from elevenlabs.client import ElevenLabs
 
 import effects as fx
 
-VOICE = "ru-RU-DmitryNeural"
-RATE = "+10%"
 W, H = 1080, 1920
 FPS = 30
 MAX_STEP_DURATION = 45.0
@@ -28,7 +28,6 @@ TMP_DIR = "_tmp"
 
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 COLOR_WHITE = (255, 255, 255)
-COLOR_HIGHLIGHT = (240, 185, 11)
 
 QUOTES = [
     "Почему ты бедный? Не потому что мало зарабатываешь, а потому что не умеешь управлять тем, что зарабатываешь. Богатые люди покупают активы, бедные покупают вещи, которые выглядят как богатство.",
@@ -94,42 +93,6 @@ def is_valid_video(path, min_duration=0.3):
         return False
 
 
-async def _generate_voice_once(text, audio_path, voice, rate, pitch=None):
-    import edge_tts
-    kwargs = {"rate": rate}
-    if pitch:
-        kwargs["pitch"] = pitch
-    communicate = edge_tts.Communicate(text, voice, **kwargs)
-    word_timings = []
-    with open(audio_path, "wb") as audio_file:
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_file.write(chunk["data"])
-            elif chunk["type"] == "WordBoundary":
-                word_timings.append({
-                    "word": chunk["text"],
-                    "start": chunk["offset"] / 10000000,
-                    "end": (chunk["offset"] + chunk["duration"]) / 10000000
-                })
-    return word_timings
-
-
-async def generate_voice_with_timings(text, audio_path, voice=None, rate=None, pitch=None, retries=3):
-    last_error = None
-    for attempt in range(1, retries + 1):
-        try:
-            word_timings = await _generate_voice_once(text, audio_path, voice or VOICE, rate or RATE, pitch)
-            if os.path.exists(audio_path) and os.path.getsize(audio_path) > 500:
-                return word_timings
-            last_error = "empty audio file"
-        except Exception as e:
-            last_error = str(e)
-            print(" Attempt " + str(attempt) + "/" + str(retries) + " failed (" + str(last_error) + "), retrying...")
-            await asyncio.sleep(1.5 * attempt)
-    print(" Voice generation failed after " + str(retries) + " attempts: " + str(last_error))
-    return []
-
-
 def build_fallback_timings(text):
     words = text.split()
     t = 0.3
@@ -146,6 +109,51 @@ def resolve_duration(word_timings, audio_path, tail=1.0):
     real_audio = get_audio_duration(audio_path)
     duration = max(word_based, real_audio + tail * 0.5) if real_audio > 0 else word_based
     return min(duration, MAX_STEP_DURATION)
+
+
+def generate_voice_elevenlabs(text, audio_path):
+    """Генерация голоса через ElevenLabs"""
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "")
+    if not api_key:
+        print(" ELEVENLABS_API_KEY not set")
+        return False
+    
+    try:
+        client = ElevenLabs(api_key=api_key)
+        audio = client.text_to_speech.convert(
+            text=text,
+            voice_id="pNInz6obpgDQGcFmaJgB",  # Adam — хорошо говорит на русском
+            model_id="eleven_multilingual_v2",
+            voice_settings=VoiceSettings(
+                stability=0.5,
+                similarity_boost=0.75,
+                style=0.3,
+                use_speaker_boost=True
+            )
+        )
+        
+        # Сохраняем аудио
+        with open(audio_path, "wb") as f:
+            for chunk in audio:
+                f.write(chunk)
+        
+        return os.path.exists(audio_path) and os.path.getsize(audio_path) > 500
+    except Exception as e:
+        print(" ElevenLabs error: " + str(e))
+        return False
+
+
+def generate_voice_with_timings(text, audio_path):
+    """
+    Генерируем голос через ElevenLabs.
+    ElevenLabs не даёт word timings, поэтому используем fallback.
+    """
+    success = generate_voice_elevenlabs(text, audio_path)
+    if success:
+        # ElevenLabs не даёт word timings, возвращаем пустой список
+        # Функция-вызыватель сама создаст fallback
+        return []
+    return None
 
 
 MOOD_QUERIES = [
@@ -492,10 +500,14 @@ def create_short(quote=None, out_name="short.mp4", hook_text=None, final_text=No
     os.makedirs(TMP_DIR)
 
     audio_path = TMP_DIR + "/voice.mp3"
-    word_timings = asyncio.run(generate_voice_with_timings(quote, audio_path))
+    word_timings_result = generate_voice_with_timings(quote, audio_path)
     
-    if not word_timings:
-        print(" TTS failed, using fallback timing (video will have no voice)")
+    # Если ElevenLabs не сработал — используем fallback
+    if word_timings_result is None:
+        print(" ElevenLabs failed, using fallback timing (no voice)")
+        word_timings = build_fallback_timings(quote)
+    else:
+        # ElevenLabs не даёт timings, строим fallback
         word_timings = build_fallback_timings(quote)
     
     if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 500:
