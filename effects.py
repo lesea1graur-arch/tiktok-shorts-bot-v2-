@@ -1,5 +1,5 @@
 """
-effects.py — стили, цвета, подсветка ключевых слов
+effects.py — стили, цвета, подсветка ключевых слов, утилиты для субтитров
 """
 
 HIGHLIGHT_WORDS = {
@@ -40,3 +40,38 @@ def get_hook_color(text):
     if any(w in t for w in success):
         return (0, 230, 120)
     return (255, 200, 0)
+
+
+def split_words_into_lines(words, font, draw, max_width, spacing=20):
+    """Перенос слов на новые строки по ширине экрана"""
+    lines = []
+    current_line = []
+    current_width = 0
+
+    for word in words:
+        bbox = draw.textbbox((0, 0), word, font=font)
+        word_w = bbox[2] - bbox[0]
+
+        if current_width + word_w + (spacing if current_line else 0) > max_width and current_line:
+            lines.append(current_line)
+            current_line = [word]
+            current_width = word_w
+        else:
+            current_line.append(word)
+            current_width += word_w + (spacing if len(current_line) > 1 else 0)
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines
+
+
+def calculate_line_width(line_words, font, draw, spacing=20):
+    """Ширина строки в пикселях"""
+    total = 0
+    for i, word in enumerate(line_words):
+        bbox = draw.textbbox((0, 0), word, font=font)
+        total += (bbox[2] - bbox[0])
+        if i < len(line_words) - 1:
+            total += spacing
+    return total
