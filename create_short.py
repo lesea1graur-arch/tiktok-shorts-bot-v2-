@@ -215,7 +215,6 @@ def prepare_background(duration, out_path):
         if clip_paths:
             per_clip_dur = duration / len(clip_paths)
             processed = []
-            # УЛУЧШЕННЫЙ ФИЛЬТР: zoom + vignette + цветокоррекция
             zoom_filter_tpl = (
                 "scale=" + str(W) + ":" + str(H) + ":force_original_aspect_ratio=increase,crop=" + str(W) + ":" + str(H) + ","
                 "zoompan=z='min(zoom+0.0025,1.15)':d=1:s=" + str(W) + "x" + str(H) + ":fps=" + str(FPS) + ","
@@ -301,15 +300,7 @@ def _stitch_backgrounds(clip_paths, out_path, target_duration):
     return ok and is_valid_video(out_path)
 
 
-# ============ УЛУЧШЕННЫЕ СУБТИТРЫ ============
-
 def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=None, final_text=None):
-    """
-    Улучшенный рендер субтитров:
-    - Хук в начале (большой цветной текст)
-    - Word-by-word с подсветкой ключевых слов
-    - Финал в конце (большой текст)
-    """
     os.makedirs(frames_dir, exist_ok=True)
 
     font_main = ImageFont.truetype(FONT_BOLD, 62)
@@ -319,13 +310,11 @@ def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=No
     total_frames = max(1, int(total_duration * FPS) + 1)
     words = [w["word"] for w in word_timings]
 
-    # Время хука и финала
     HOOK_DURATION = 2.0
     FINAL_DURATION = 2.5
     hook_end_frame = int(HOOK_DURATION * FPS)
     final_start_frame = int((total_duration - FINAL_DURATION) * FPS)
 
-    # Цвета
     hook_color = fx.get_hook_color(hook_text) if hook_text else (255, 200, 0)
     final_color = (0, 230, 120)
 
@@ -335,12 +324,11 @@ def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=No
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # === ХУК (первые 2 секунды) ===
+        # === ХУК ===
         if frame_i < hook_end_frame and hook_text:
-            progress = min(1.0, t / 0.4)  # Быстрое появление
+            progress = min(1.0, t / 0.4)
             alpha = int(255 * progress)
 
-            # Разбиваем хук на строки
             hook_lines = hook_text.split('\n') if '\n' in hook_text else [hook_text[i:i+15] for i in range(0, len(hook_text), 15)]
             if len(hook_lines) == 1 and len(hook_text) > 20:
                 mid = len(hook_text) // 2
@@ -353,16 +341,13 @@ def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=No
                 x = (W - line_w) // 2
                 y = y_start + i * 120
 
-                # Тень
                 draw.text((x + 4, y + 4), line, font=font_hook, fill=(0, 0, 0, alpha))
-                # Текст
                 draw.text((x, y), line, font=font_hook, fill=(*hook_color, alpha))
 
-        # === ОСНОВНЫЕ СУБТИТРЫ (после хука, до финала) ===
+        # === СУБТИТРЫ ===
         elif frame_i >= hook_end_frame and frame_i < final_start_frame and words:
             subtitle_t = t - HOOK_DURATION
 
-            # Находим активное слово
             active_idx = 0
             for i, w in enumerate(word_timings):
                 if w["start"] <= subtitle_t <= w["end"]:
@@ -371,22 +356,18 @@ def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=No
                 elif subtitle_t > w["end"]:
                     active_idx = i
 
-            # Показываем окно слов (±3 от активного)
             window = 3
             lo = max(0, active_idx - window)
             hi = min(len(words), active_idx + window + 1)
             visible_words = words[lo:hi]
 
-            # Разбиваем на строки
             max_line_w = W - 120
             lines = fx.split_words_into_lines(visible_words, font_main, draw, max_line_w, spacing=18)
 
-            # Рассчитываем высоту блока
             line_height = 72
             total_h = len(lines) * line_height
             y_start = int(H * 0.58) - total_h // 2
 
-            # Рисуем фон под субтитры
             pad_x, pad_y = 30, 20
             box_top = y_start - pad_y
             box_bottom = y_start + total_h + pad_y
@@ -395,7 +376,6 @@ def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=No
                 radius=20, fill=(0, 0, 0, 170)
             )
 
-            # Рисуем слова
             y = y_start
             word_counter = 0
             for line in lines:
@@ -407,15 +387,7 @@ def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=No
                     is_active = (real_idx == active_idx)
                     color = fx.get_word_color(word, is_active)
 
-                    # Пульсация активного слова
-                    if is_active:
-                        pulse = 1.0 + 0.08 * abs((frame_i % 10) - 5) / 5
-                        # Для простоты — без масштабирования, просто цвет
-                        pass
-
-                    # Тень
                     draw.text((x + 3, y + 3), word, font=font_main, fill=(0, 0, 0), stroke_width=3, stroke_fill=(0, 0, 0))
-                    # Текст
                     draw.text((x, y), word, font=font_main, fill=color, stroke_width=3, stroke_fill=(0, 0, 0))
 
                     bbox = draw.textbbox((0, 0), word, font=font_main)
@@ -424,7 +396,7 @@ def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=No
 
                 y += line_height
 
-        # === ФИНАЛ (последние 2.5 секунды) ===
+        # === ФИНАЛ ===
         elif frame_i >= final_start_frame and final_text:
             progress = min(1.0, (t - (total_duration - FINAL_DURATION)) / 0.5)
 
@@ -496,8 +468,6 @@ def add_background_music(video_path, out_path):
     return ok and is_valid_video(out_path, min_duration=1.0)
 
 
-# ============ ГЛАВНАЯ ФУНКЦИЯ ============
-
 def create_short(quote=None, out_name="short.mp4", hook_text=None, final_text=None):
     if not quote:
         run_number = os.environ.get("GITHUB_RUN_NUMBER")
@@ -508,7 +478,6 @@ def create_short(quote=None, out_name="short.mp4", hook_text=None, final_text=No
 
     print("Quote: " + quote)
 
-    # Авто-генерация хука и финала если не заданы
     if not hook_text:
         words = quote.split()[:4]
         hook_text = " ".join(words).upper()
@@ -524,9 +493,11 @@ def create_short(quote=None, out_name="short.mp4", hook_text=None, final_text=No
 
     audio_path = TMP_DIR + "/voice.mp3"
     word_timings = asyncio.run(generate_voice_with_timings(quote, audio_path))
+    
     if not word_timings:
-        print(" Using fallback word timing estimate")
+        print(" TTS failed, using fallback timing (video will have no voice)")
         word_timings = build_fallback_timings(quote)
+    
     if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 500:
         fallback_dur = word_timings[-1]["end"] + 1.0
         run_ffmpeg(
