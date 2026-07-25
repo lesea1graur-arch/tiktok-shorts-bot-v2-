@@ -1,5 +1,5 @@
 """
-create_short.py — генератор Shorts/Reels с ElevenLabs озвучкой
+create_short.py — генератор Shorts/Reels с ElevenLabs / gTTS озвучкой
 Формат: 1080x1920, mp4, h264
 """
 
@@ -15,6 +15,7 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 from elevenlabs import VoiceSettings
 from elevenlabs.client import ElevenLabs
+from gtts import gTTS  # ← Google TTS fallback
 
 import effects as fx
 
@@ -143,16 +144,34 @@ def generate_voice_elevenlabs(text, audio_path):
         return False
 
 
+def generate_voice_gtts(text, audio_path, lang="ru"):
+    """Генерация голоса через Google Text-to-Speech (gTTS) — бесплатный fallback"""
+    try:
+        tts = gTTS(text=text, lang=lang, slow=False)
+        tts.save(audio_path)
+        return os.path.exists(audio_path) and os.path.getsize(audio_path) > 500
+    except Exception as e:
+        print(" gTTS error: " + str(e))
+        return False
+
+
 def generate_voice_with_timings(text, audio_path):
     """
-    Генерируем голос через ElevenLabs.
-    ElevenLabs не даёт word timings, поэтому используем fallback.
+    Пробуем сначала ElevenLabs, затем gTTS.
+    Ни один из них не даёт word timings, поэтому возвращаем пустой список.
+    Функция-вызыватель сама создаст fallback timings.
     """
-    success = generate_voice_elevenlabs(text, audio_path)
-    if success:
-        # ElevenLabs не даёт word timings, возвращаем пустой список
-        # Функция-вызыватель сама создаст fallback
+    # Попытка 1: ElevenLabs
+    if generate_voice_elevenlabs(text, audio_path):
         return []
+    
+    print(" ElevenLabs failed, trying gTTS...")
+    
+    # Попытка 2: gTTS (Google TTS)
+    if generate_voice_gtts(text, audio_path, lang="ru"):
+        return []
+    
+    # Ничего не сработало
     return None
 
 
@@ -502,12 +521,11 @@ def create_short(quote=None, out_name="short.mp4", hook_text=None, final_text=No
     audio_path = TMP_DIR + "/voice.mp3"
     word_timings_result = generate_voice_with_timings(quote, audio_path)
     
-    # Если ElevenLabs не сработал — используем fallback
+    # gTTS и ElevenLabs не дают word timings, строим fallback
     if word_timings_result is None:
-        print(" ElevenLabs failed, using fallback timing (no voice)")
+        print(" All voice engines failed, using fallback timing (no voice)")
         word_timings = build_fallback_timings(quote)
     else:
-        # ElevenLabs не даёт timings, строим fallback
         word_timings = build_fallback_timings(quote)
     
     if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 500:
