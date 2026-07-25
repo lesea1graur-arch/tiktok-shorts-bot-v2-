@@ -1,6 +1,5 @@
 """
 crypto_video.py — генератор видео про крипту/трейдинг для TikTok/Shorts.
-Использует create_short.py как базу, но с крипто-текстами и хуками.
 """
 
 import os
@@ -92,7 +91,6 @@ CRYPTO_SCRIPTS = [
     "а на коррекции, когда большинство новых экспертов исчезает вместе с депозитом.",
 ]
 
-# Хуки для каждого скрипта (по порядку)
 CRYPTO_HOOKS = [
     "ДИСЦИПЛИНА\nВАЖНЕЕ ИНДИКАТОРА",
     "ВХОД НА ХАЯХ\n= ГЭМБЛИНГ",
@@ -116,7 +114,6 @@ CRYPTO_HOOKS = [
     "БЫКИ СОЗДАЮТ\nЭКСПЕРТОВ",
 ]
 
-# Финалы для каждого скрипта
 CRYPTO_FINALS = [
     "ДУМАЙ\nСИСТЕМНО",
     "ЖДИ\nУРОВНЯ",
@@ -160,14 +157,12 @@ def build_crypto_video(script: str = None, out_name: str = "crypto.mp4"):
     cs.MOOD_MUST_INCLUDE = MOOD_MUST_INCLUDE
 
     try:
-        # Если скрипт не задан — выбираем случайный и берём соответствующий хук/финал
         if not script:
             idx = random.randint(0, len(CRYPTO_SCRIPTS) - 1)
             script = CRYPTO_SCRIPTS[idx]
             hook = CRYPTO_HOOKS[idx]
             final = CRYPTO_FINALS[idx]
         else:
-            # Ищем индекс скрипта
             try:
                 idx = CRYPTO_SCRIPTS.index(script)
                 hook = CRYPTO_HOOKS[idx]
