@@ -1,5 +1,5 @@
 """
-create_short.py — генератор Shorts/Reels с ElevenLabs / gTTS озвучкой
+create_short.py — генератор Shorts/Reels с gTTS озвучкой
 Формат: 1080x1920, mp4, h264
 """
 
@@ -13,9 +13,7 @@ from pathlib import Path
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
-from elevenlabs import VoiceSettings
-from elevenlabs.client import ElevenLabs
-from gtts import gTTS  # ← Google TTS fallback
+from gtts import gTTS
 
 import effects as fx
 
@@ -112,40 +110,8 @@ def resolve_duration(word_timings, audio_path, tail=1.0):
     return min(duration, MAX_STEP_DURATION)
 
 
-def generate_voice_elevenlabs(text, audio_path):
-    """Генерация голоса через ElevenLabs"""
-    api_key = os.environ.get("ELEVENLABS_API_KEY", "")
-    if not api_key:
-        print(" ELEVENLABS_API_KEY not set")
-        return False
-    
-    try:
-        client = ElevenLabs(api_key=api_key)
-        audio = client.text_to_speech.convert(
-            text=text,
-            voice_id="pNInz6obpgDQGcFmaJgB",  # Adam — хорошо говорит на русском
-            model_id="eleven_multilingual_v2",
-            voice_settings=VoiceSettings(
-                stability=0.5,
-                similarity_boost=0.75,
-                style=0.3,
-                use_speaker_boost=True
-            )
-        )
-        
-        # Сохраняем аудио
-        with open(audio_path, "wb") as f:
-            for chunk in audio:
-                f.write(chunk)
-        
-        return os.path.exists(audio_path) and os.path.getsize(audio_path) > 500
-    except Exception as e:
-        print(" ElevenLabs error: " + str(e))
-        return False
-
-
 def generate_voice_gtts(text, audio_path, lang="ru"):
-    """Генерация голоса через Google Text-to-Speech (gTTS) — бесплатный fallback"""
+    """Генерация голоса через Google Text-to-Speech (gTTS)"""
     try:
         tts = gTTS(text=text, lang=lang, slow=False)
         tts.save(audio_path)
@@ -157,21 +123,12 @@ def generate_voice_gtts(text, audio_path, lang="ru"):
 
 def generate_voice_with_timings(text, audio_path):
     """
-    Пробуем сначала ElevenLabs, затем gTTS.
-    Ни один из них не даёт word timings, поэтому возвращаем пустой список.
+    Генерируем голос через gTTS.
+    gTTS не даёт word timings, поэтому возвращаем пустой список.
     Функция-вызыватель сама создаст fallback timings.
     """
-    # Попытка 1: ElevenLabs
-    if generate_voice_elevenlabs(text, audio_path):
-        return []
-    
-    print(" ElevenLabs failed, trying gTTS...")
-    
-    # Попытка 2: gTTS (Google TTS)
     if generate_voice_gtts(text, audio_path, lang="ru"):
         return []
-    
-    # Ничего не сработало
     return None
 
 
@@ -521,9 +478,9 @@ def create_short(quote=None, out_name="short.mp4", hook_text=None, final_text=No
     audio_path = TMP_DIR + "/voice.mp3"
     word_timings_result = generate_voice_with_timings(quote, audio_path)
     
-    # gTTS и ElevenLabs не дают word timings, строим fallback
+    # gTTS не даёт word timings, строим fallback
     if word_timings_result is None:
-        print(" All voice engines failed, using fallback timing (no voice)")
+        print(" gTTS failed, using fallback timing (no voice)")
         word_timings = build_fallback_timings(quote)
     else:
         word_timings = build_fallback_timings(quote)
