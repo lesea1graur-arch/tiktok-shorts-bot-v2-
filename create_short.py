@@ -1,0 +1,561 @@
+"""
+create_short.py — генератор Shorts/Reels (улучшенная версия)
+Формат: 1080x1920, mp4, h264
+"""
+
+import asyncio
+import os
+import random
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import requests
+from PIL import Image, ImageDraw, ImageFont
+
+import effects as fx
+
+VOICE = "ru-RU-DmitryNeural"
+RATE = "+10%"
+W, H = 1080, 1920
+FPS = 30
+MAX_STEP_DURATION = 45.0
+
+BG_DIR = "assets/backgrounds"
+OUT_DIR = "output"
+TMP_DIR = "_tmp"
+
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+COLOR_WHITE = (255, 255, 255)
+COLOR_HIGHLIGHT = (240, 185, 11)
+
+QUOTES = [
+    "Почему ты бедный? Не потому что мало зарабатываешь, а потому что не умеешь управлять тем, что зарабатываешь. Богатые люди покупают активы, бедные покупают вещи, которые выглядят как богатство.",
+    "Правило 50 30 20 звучит просто, но почти никто его не соблюдает. Пятьдесят процентов на обязательные расходы, тридцать на желания, двадцать откладываешь и инвестируешь.",
+    "Твоя зарплата не сделает тебя богатым, если ты не меняешь то, что делаешь с деньгами после зарплаты. Можно зарабатывать три тысячи долларов и оставаться бедным всю жизнь.",
+    "Богатые люди боятся тратить время, бедные люди боятся тратить деньги. Именно поэтому одни покупают время других за зарплату, а другие продают своё время за фиксированную сумму всю жизнь.",
+    "Никто не разбогател, откладывая то, что осталось после трат. Богатеют те, кто сначала откладывает, а живёт на то, что осталось.",
+    "Кредит на телефон в рассрочку — это способ платить завтрашними деньгами за сегодняшнее желание. Банки не выдумали ничего нового, они просто нашли способ продать тебе твою же будущую зарплату с процентами.",
+    "Финансовая подушка это не роскошь, это разница между уволили и я справлюсь и уволили и я в панике. Три-шесть месяцев расходов на отдельном счёте меняют не только финансы, но и то, как ты принимаешь решения на работе.",
+    "Инфляция ест твои сбережения на банковском вкладе быстрее, чем банк начисляет проценты. Деньги под подушкой и деньги на вкладе под три процента теряют покупательную способность одинаково стабильно.",
+    "Ты не станешь богатым от одной хорошей сделки, но можешь разориться от одной плохой. Асимметрия рисков работает против тех, кто ставит всё на один исход.",
+    "Купить вещь в кредит, чтобы показать в соцсетях, что у тебя всё хорошо — это самая дорогая форма рекламы, за которую платишь ты сам.",
+    "Пассивный доход не появляется пассивно. Сначала ты вкладываешь активное время, деньги и ошибки, и только потом система начинает работать без тебя.",
+    "Сравнение своей зарплаты с чужим образом жизни в соцсетях — гарантированный способ чувствовать себя бедным при любом доходе.",
+    "Урок про деньги, который не дают в школе — цена вопрос не только про то, сколько стоит вещь, а про то, сколько часов твоей жизни ты обменял, чтобы её купить.",
+    "Большинство лотерейных миллионеров возвращаются к прежнему уровню жизни за несколько лет. Деньги без финансовой грамотности не решают проблему.",
+    "Инвестировать по чуть-чуть, но регулярно, почти всегда обгоняет попытку поймать идеальный момент для входа. Время в рынке важнее, чем тайминг рынка.",
+    "Твой самый большой актив в двадцать пять лет — это не деньги, а время до пенсии. Сложный процент работает медленно в начале и взрывается в конце.",
+    "Богатые люди задают вопрос как это купить, чтобы это работало на меня. Бедные люди задают вопрос как накопить, чтобы это купить.",
+    "Долг на потребление и долг на актив — это два разных долга, которые многие путают. Кредит на отпуск исчезает вместе с воспоминаниями, а платежи остаются.",
+    "Финансовая грамотность не про то, чтобы знать сложные термины с Уолл-стрит. Она про то, чтобы твои расходы были меньше доходов, а разница работала на тебя.",
+    "Работа за зарплату — это обмен времени на деньги по фиксированному курсу, который ты не контролируешь. Собственный актив — это возможность продавать результат, а не время.",
+    "Люди тратят больше времени на выбор ресторана на вечер, чем на выбор, куда вложить сбережения на следующие десять лет.",
+]
+
+
+def run_ffmpeg(cmd, label="ffmpeg"):
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("[" + label + "] ffmpeg error: " + result.stderr[-800:])
+        return False
+    return True
+
+
+def get_audio_duration(audio_path):
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 100:
+        return 0.0
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", audio_path],
+        capture_output=True, text=True
+    )
+    try:
+        return float(result.stdout.strip())
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def is_valid_video(path, min_duration=0.3):
+    if not os.path.exists(path) or os.path.getsize(path) < 1000:
+        return False
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type",
+         "-show_entries", "format=duration", "-of", "csv=p=0", path],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+    try:
+        lines = [line for line in result.stdout.strip().split("\n") if line]
+        duration = float(lines[-1])
+        return duration >= min_duration
+    except (ValueError, IndexError):
+        return False
+
+
+async def _generate_voice_once(text, audio_path, voice, rate, pitch=None):
+    import edge_tts
+    kwargs = {"rate": rate}
+    if pitch:
+        kwargs["pitch"] = pitch
+    communicate = edge_tts.Communicate(text, voice, **kwargs)
+    word_timings = []
+    with open(audio_path, "wb") as audio_file:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_file.write(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                word_timings.append({
+                    "word": chunk["text"],
+                    "start": chunk["offset"] / 10000000,
+                    "end": (chunk["offset"] + chunk["duration"]) / 10000000
+                })
+    return word_timings
+
+
+async def generate_voice_with_timings(text, audio_path, voice=None, rate=None, pitch=None, retries=3):
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            word_timings = await _generate_voice_once(text, audio_path, voice or VOICE, rate or RATE, pitch)
+            if os.path.exists(audio_path) and os.path.getsize(audio_path) > 500:
+                return word_timings
+            last_error = "empty audio file"
+        except Exception as e:
+            last_error = str(e)
+            print(" Attempt " + str(attempt) + "/" + str(retries) + " failed (" + str(last_error) + "), retrying...")
+            await asyncio.sleep(1.5 * attempt)
+    print(" Voice generation failed after " + str(retries) + " attempts: " + str(last_error))
+    return []
+
+
+def build_fallback_timings(text):
+    words = text.split()
+    t = 0.3
+    timings = []
+    for w in words:
+        dur = max(0.18, len(w) * 0.06)
+        timings.append({"word": w, "start": t, "end": t + dur})
+        t += dur + 0.05
+    return timings
+
+
+def resolve_duration(word_timings, audio_path, tail=1.0):
+    word_based = word_timings[-1]["end"] + tail if word_timings else tail
+    real_audio = get_audio_duration(audio_path)
+    duration = max(word_based, real_audio + tail * 0.5) if real_audio > 0 else word_based
+    return min(duration, MAX_STEP_DURATION)
+
+
+MOOD_QUERIES = [
+    "counting money hands", "business man city night", "stock market screen trading",
+    "luxury car night city", "office working laptop money"
+]
+MOOD_MUST_INCLUDE = ["money", "business", "stock", "car", "office", "cash", "finance", "wealth"]
+
+
+def _pexels_fetch_one(query, out_path, exclude_ids=None, retries=2):
+    api_key = os.environ.get("PEXELS_API_KEY", "")
+    if not api_key:
+        return False
+    exclude_ids = exclude_ids or set()
+    headers = {"Authorization": api_key}
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(
+                "https://api.pexels.com/videos/search",
+                headers=headers,
+                params={"query": query, "per_page": 15, "orientation": "portrait"},
+                timeout=30
+            )
+            resp.raise_for_status()
+            videos = resp.json().get("videos", [])
+            videos = [v for v in videos if v.get("id") not in exclude_ids]
+            relevant = [v for v in videos if any(w in v.get("url", "").lower() for w in MOOD_MUST_INCLUDE)]
+            videos = relevant or videos
+            if not videos:
+                return False
+            video = random.choice(videos)
+            files = video.get("video_files", [])
+            candidates = [f for f in files if f.get("file_type") == "video/mp4" and f.get("height", 0) >= 1280]
+            if not candidates:
+                candidates = [f for f in files if f.get("file_type") == "video/mp4"]
+            if not candidates:
+                return False
+            candidates.sort(key=lambda f: f.get("height", 0))
+            file_url = candidates[len(candidates) // 2]["link"]
+            r = requests.get(file_url, stream=True, timeout=60)
+            r.raise_for_status()
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            if is_valid_video(out_path):
+                exclude_ids.add(video.get("id"))
+                return True
+        except Exception as e:
+            print(" Pexels fetch error (attempt " + str(attempt) + "/" + str(retries) + "): " + str(e))
+            time.sleep(1)
+    return False
+
+
+def prepare_background(duration, out_path):
+    api_key = os.environ.get("PEXELS_API_KEY", "")
+    if api_key:
+        clip_len = 6.0
+        n_clips = max(1, min(5, int(duration // clip_len) + 1))
+        used_ids = set()
+        clip_paths = []
+        tmp_dir = os.path.dirname(out_path) or "."
+        for i in range(n_clips):
+            query = random.choice(MOOD_QUERIES)
+            raw_path = os.path.join(tmp_dir, "_bgraw_" + str(i) + ".mp4")
+            if _pexels_fetch_one(query, raw_path, exclude_ids=used_ids):
+                clip_paths.append(raw_path)
+        if clip_paths:
+            per_clip_dur = duration / len(clip_paths)
+            processed = []
+            # УЛУЧШЕННЫЙ ФИЛЬТР: zoom + vignette + цветокоррекция
+            zoom_filter_tpl = (
+                "scale=" + str(W) + ":" + str(H) + ":force_original_aspect_ratio=increase,crop=" + str(W) + ":" + str(H) + ","
+                "zoompan=z='min(zoom+0.0025,1.15)':d=1:s=" + str(W) + "x" + str(H) + ":fps=" + str(FPS) + ","
+                "eq=contrast=1.12:saturation=1.08:brightness=0.015,"
+                "vignette=PI/2.6,"
+                "colorbalance=rs=0.04:bs=-0.04:rm=0.02:bm=-0.02"
+            )
+            for i, raw in enumerate(clip_paths):
+                seg_path = os.path.join(tmp_dir, "_bgseg_" + str(i) + ".mp4")
+                ok = run_ffmpeg(
+                    ["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw, "-t", str(per_clip_dur + 1.0),
+                     "-vf", zoom_filter_tpl, "-an", seg_path],
+                    "bg_segment_" + str(i)
+                )
+                if ok and is_valid_video(seg_path):
+                    processed.append(seg_path)
+                if os.path.exists(raw):
+                    os.remove(raw)
+            if processed:
+                success = _stitch_backgrounds(processed, out_path, duration)
+                for p in processed:
+                    if os.path.exists(p):
+                        os.remove(p)
+                if success:
+                    return True
+        print(" Multi-clip Pexels background failed, trying local")
+    files = [f for f in Path(BG_DIR).glob("*.mp4") if is_valid_video(str(f))]
+    if files:
+        bg = str(random.choice(files))
+        ok = run_ffmpeg(
+            ["ffmpeg", "-y", "-stream_loop", "-1", "-i", bg, "-t", str(duration),
+             "-vf", "scale=" + str(W) + ":" + str(H) + ":force_original_aspect_ratio=increase,crop=" + str(W) + ":" + str(H) + ","
+                    "zoompan=z='min(zoom+0.0015,1.08)':d=1:s=" + str(W) + "x" + str(H) + ":fps=" + str(FPS) + ","
+                    "eq=contrast=1.08:saturation=1.05,"
+                    "vignette=PI/3.0",
+             "-an", out_path],
+            "prepare_background_local"
+        )
+        if ok and is_valid_video(out_path):
+            return True
+    print(" Local background failed, using procedural")
+    return run_ffmpeg(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=0x14181D:s=" + str(W) + "x" + str(H) + ":d=" + str(duration),
+         "-vf", "noise=alls=6:allf=t", out_path],
+        "prepare_background_fallback"
+    )
+
+
+def _stitch_backgrounds(clip_paths, out_path, target_duration):
+    if len(clip_paths) == 1:
+        return run_ffmpeg(
+            ["ffmpeg", "-y", "-i", clip_paths[0], "-t", str(target_duration),
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(FPS), out_path],
+            "stitch_single"
+        )
+    TRANSITION = 0.5
+    inputs = []
+    for p in clip_paths:
+        inputs += ["-i", p]
+    durations = [get_audio_duration(p) or (target_duration / len(clip_paths) + 1.0) for p in clip_paths]
+    filter_parts = []
+    for i in range(len(clip_paths)):
+        filter_parts.append(
+            "[" + str(i) + ":v]fps=" + str(FPS) + ",format=yuv420p,setpts=PTS-STARTPTS[nv" + str(i) + "]"
+        )
+    prev_v = "nv0"
+    cumulative = durations[0]
+    for i in range(1, len(clip_paths)):
+        offset = max(0.1, cumulative - TRANSITION)
+        out_v = "v" + str(i)
+        filter_parts.append(
+            "[" + prev_v + "][nv" + str(i) + "]xfade=transition=fade:duration=" + str(TRANSITION) +
+            ":offset=" + ("%.2f" % offset) + "[" + out_v + "]"
+        )
+        prev_v = out_v
+        cumulative += durations[i] - TRANSITION
+    filter_complex = ";".join(filter_parts)
+    ok = run_ffmpeg(
+        ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex, "-map", "[" + prev_v + "]",
+         "-t", str(target_duration), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(FPS), out_path],
+        "stitch_backgrounds"
+    )
+    return ok and is_valid_video(out_path)
+
+
+# ============ УЛУЧШЕННЫЕ СУБТИТРЫ ============
+
+def render_caption_frames(word_timings, total_duration, frames_dir, hook_text=None, final_text=None):
+    """
+    Улучшенный рендер субтитров:
+    - Хук в начале (большой цветной текст)
+    - Word-by-word с подсветкой ключевых слов
+    - Финал в конце (большой текст)
+    """
+    os.makedirs(frames_dir, exist_ok=True)
+
+    font_main = ImageFont.truetype(FONT_BOLD, 62)
+    font_hook = ImageFont.truetype(FONT_BOLD, 110)
+    font_final = ImageFont.truetype(FONT_BOLD, 95)
+
+    total_frames = max(1, int(total_duration * FPS) + 1)
+    words = [w["word"] for w in word_timings]
+
+    # Время хука и финала
+    HOOK_DURATION = 2.0
+    FINAL_DURATION = 2.5
+    hook_end_frame = int(HOOK_DURATION * FPS)
+    final_start_frame = int((total_duration - FINAL_DURATION) * FPS)
+
+    # Цвета
+    hook_color = fx.get_hook_color(hook_text) if hook_text else (255, 200, 0)
+    final_color = (0, 230, 120)
+
+    for frame_i in range(total_frames):
+        t = frame_i / FPS
+
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # === ХУК (первые 2 секунды) ===
+        if frame_i < hook_end_frame and hook_text:
+            progress = min(1.0, t / 0.4)  # Быстрое появление
+            alpha = int(255 * progress)
+
+            # Разбиваем хук на строки
+            hook_lines = hook_text.split('\n') if '\n' in hook_text else [hook_text[i:i+15] for i in range(0, len(hook_text), 15)]
+            if len(hook_lines) == 1 and len(hook_text) > 20:
+                mid = len(hook_text) // 2
+                hook_lines = [hook_text[:mid], hook_text[mid:]]
+
+            y_start = H // 2 - (len(hook_lines) * 120) // 2
+            for i, line in enumerate(hook_lines):
+                bbox = draw.textbbox((0, 0), line, font=font_hook)
+                line_w = bbox[2] - bbox[0]
+                x = (W - line_w) // 2
+                y = y_start + i * 120
+
+                # Тень
+                draw.text((x + 4, y + 4), line, font=font_hook, fill=(0, 0, 0, alpha))
+                # Текст
+                draw.text((x, y), line, font=font_hook, fill=(*hook_color, alpha))
+
+        # === ОСНОВНЫЕ СУБТИТРЫ (после хука, до финала) ===
+        elif frame_i >= hook_end_frame and frame_i < final_start_frame and words:
+            subtitle_t = t - HOOK_DURATION
+
+            # Находим активное слово
+            active_idx = 0
+            for i, w in enumerate(word_timings):
+                if w["start"] <= subtitle_t <= w["end"]:
+                    active_idx = i
+                    break
+                elif subtitle_t > w["end"]:
+                    active_idx = i
+
+            # Показываем окно слов (±3 от активного)
+            window = 3
+            lo = max(0, active_idx - window)
+            hi = min(len(words), active_idx + window + 1)
+            visible_words = words[lo:hi]
+
+            # Разбиваем на строки
+            max_line_w = W - 120
+            lines = fx.split_words_into_lines(visible_words, font_main, draw, max_line_w, spacing=18)
+
+            # Рассчитываем высоту блока
+            line_height = 72
+            total_h = len(lines) * line_height
+            y_start = int(H * 0.58) - total_h // 2
+
+            # Рисуем фон под субтитры
+            pad_x, pad_y = 30, 20
+            box_top = y_start - pad_y
+            box_bottom = y_start + total_h + pad_y
+            draw.rounded_rectangle(
+                [40, box_top, W - 40, box_bottom],
+                radius=20, fill=(0, 0, 0, 170)
+            )
+
+            # Рисуем слова
+            y = y_start
+            word_counter = 0
+            for line in lines:
+                line_w = fx.calculate_line_width(line, font_main, draw, spacing=18)
+                x = (W - line_w) // 2
+
+                for word in line:
+                    real_idx = lo + word_counter
+                    is_active = (real_idx == active_idx)
+                    color = fx.get_word_color(word, is_active)
+
+                    # Пульсация активного слова
+                    if is_active:
+                        pulse = 1.0 + 0.08 * abs((frame_i % 10) - 5) / 5
+                        # Для простоты — без масштабирования, просто цвет
+                        pass
+
+                    # Тень
+                    draw.text((x + 3, y + 3), word, font=font_main, fill=(0, 0, 0), stroke_width=3, stroke_fill=(0, 0, 0))
+                    # Текст
+                    draw.text((x, y), word, font=font_main, fill=color, stroke_width=3, stroke_fill=(0, 0, 0))
+
+                    bbox = draw.textbbox((0, 0), word, font=font_main)
+                    x += (bbox[2] - bbox[0]) + 18
+                    word_counter += 1
+
+                y += line_height
+
+        # === ФИНАЛ (последние 2.5 секунды) ===
+        elif frame_i >= final_start_frame and final_text:
+            progress = min(1.0, (t - (total_duration - FINAL_DURATION)) / 0.5)
+
+            final_lines = final_text.split('\n') if '\n' in final_text else [final_text]
+            y_start = H // 2 - (len(final_lines) * 100) // 2
+
+            for i, line in enumerate(final_lines):
+                bbox = draw.textbbox((0, 0), line, font=font_final)
+                line_w = bbox[2] - bbox[0]
+                x = (W - line_w) // 2
+                y = y_start + i * 100
+
+                alpha = int(255 * progress)
+                draw.text((x + 4, y + 4), line, font=font_final, fill=(0, 0, 0, alpha))
+                draw.text((x, y), line, font=font_final, fill=(*final_color, alpha))
+
+        img.save(frames_dir + "/f_" + str(frame_i).zfill(5) + ".png")
+
+    return total_frames
+
+
+def assemble_final(bg_path, frames_dir, audio_path, out_path):
+    ok = run_ffmpeg(
+        ["ffmpeg", "-y", "-i", bg_path, "-framerate", str(FPS), "-i", frames_dir + "/f_%05d.png",
+         "-i", audio_path,
+         "-filter_complex", "[0:v][1:v]overlay=0:0[v]",
+         "-map", "[v]", "-map", "2:a",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(FPS),
+         "-vsync", "cfr", "-c:a", "aac", "-shortest", out_path],
+        "assemble_final"
+    )
+    return ok and is_valid_video(out_path)
+
+
+def add_background_music(video_path, out_path):
+    music_dir = "assets/music"
+    music_files = list(Path(music_dir).glob("*.mp3")) if os.path.isdir(music_dir) else []
+    duration = get_audio_duration(video_path)
+    if duration <= 0:
+        return False
+    music_path = None
+    if music_files:
+        music_path = str(random.choice(music_files))
+    else:
+        synth_path = "_music_synth.mp3"
+        ok = run_ffmpeg(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=" + str(duration),
+             "-f", "lavfi", "-i", "sine=frequency=330:duration=" + str(duration),
+             "-filter_complex",
+             "[0:a]volume=0.05[a0];[1:a]volume=0.03[a1];[a0][a1]amix=inputs=2:duration=first",
+             synth_path],
+            "music_synth"
+        )
+        if ok:
+            music_path = synth_path
+    if not music_path:
+        return False
+    ok = run_ffmpeg(
+        ["ffmpeg", "-y", "-i", video_path, "-i", music_path,
+         "-filter_complex",
+         "[1:a]aloop=loop=-1:size=2e9,atrim=0:" + str(duration) + ",volume=1[music];"
+         "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2:weights=1 0.3[aout]",
+         "-map", "0:v", "-map", "[aout]",
+         "-c:v", "copy", "-c:a", "aac", out_path],
+        "add_background_music"
+    )
+    if music_path.startswith("_music_synth") and os.path.exists(music_path):
+        os.remove(music_path)
+    return ok and is_valid_video(out_path, min_duration=1.0)
+
+
+# ============ ГЛАВНАЯ ФУНКЦИЯ ============
+
+def create_short(quote=None, out_name="short.mp4", hook_text=None, final_text=None):
+    if not quote:
+        run_number = os.environ.get("GITHUB_RUN_NUMBER")
+        if run_number:
+            quote = QUOTES[int(run_number) % len(QUOTES)]
+        else:
+            quote = random.choice(QUOTES)
+
+    print("Quote: " + quote)
+
+    # Авто-генерация хука и финала если не заданы
+    if not hook_text:
+        words = quote.split()[:4]
+        hook_text = " ".join(words).upper()
+        if len(hook_text) < 10:
+            hook_text = quote[:25].upper()
+    if not final_text:
+        final_text = "ДУМАЙ\nРАНЬШЕ ВСЕХ"
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+    if os.path.exists(TMP_DIR):
+        shutil.rmtree(TMP_DIR)
+    os.makedirs(TMP_DIR)
+
+    audio_path = TMP_DIR + "/voice.mp3"
+    word_timings = asyncio.run(generate_voice_with_timings(quote, audio_path))
+    if not word_timings:
+        print(" Using fallback word timing estimate")
+        word_timings = build_fallback_timings(quote)
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 500:
+        fallback_dur = word_timings[-1]["end"] + 1.0
+        run_ffmpeg(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", str(fallback_dur), audio_path],
+            "silence_fallback"
+        )
+
+    duration = resolve_duration(word_timings, audio_path)
+    bg_path = TMP_DIR + "/bg.mp4"
+    prepare_background(duration, bg_path)
+
+    frames_dir = TMP_DIR + "/frames"
+    render_caption_frames(word_timings, duration, frames_dir, hook_text=hook_text, final_text=final_text)
+
+    out_path = os.path.join(OUT_DIR, out_name)
+    silent_path = TMP_DIR + "/_novoice_music.mp4"
+    success = assemble_final(bg_path, frames_dir, audio_path, silent_path)
+    if not success:
+        shutil.rmtree(TMP_DIR, ignore_errors=True)
+        raise RuntimeError("Failed to build video for quote: " + quote)
+
+    if not add_background_music(silent_path, out_path):
+        print(" Music mixing failed, saving without music")
+        shutil.copy(silent_path, out_path)
+
+    shutil.rmtree(TMP_DIR, ignore_errors=True)
+    print("Done: " + out_path + " (~" + str(round(duration, 1)) + " sec)")
+    return out_path
+
+
+if __name__ == "__main__":
+    create_short()
